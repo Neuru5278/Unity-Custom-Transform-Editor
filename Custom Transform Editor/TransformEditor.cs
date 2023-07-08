@@ -8,11 +8,9 @@ using UnityEditor;
 // 날짜 : 2021-02-17 02:06
 // 작성자 : Rito
 
-namespace Rito.EditorUtilities
+namespace Rito
 {
-#if RITO_USE_CUSTOM_TRANSFORM_EDITOR
     [CustomEditor(typeof(Transform))]
-#endif
     public class TransformEditor : UnityEditor.Editor
     {
         private Transform transform;
@@ -26,18 +24,16 @@ namespace Rito.EditorUtilities
         private System.Reflection.MethodInfo _trguiOnEnableMethod;
         private System.Reflection.MethodInfo _trguiRotationFieldMethod;
 
+        private static Vector3[] copiedValues = new Vector3[3];
+        private static bool hasCopiedValues;
+        private static int contextChoice;
+
         private void OnEnable()
         {
             transform = target as Transform;
 
-            texturePath = TransformEditorHelper.TexturePath;
-
+            texturePath = TransformEditorHelper.FolderPath + @"\EditorResources\Refresh.png";
             refreshTexture = AssetDatabase.LoadAssetAtPath(texturePath, typeof(Texture2D)) as Texture2D;
-
-            // UPM Path
-            if(refreshTexture == null)
-                refreshTexture = AssetDatabase.LoadAssetAtPath(
-                    "Packages/com.rito.custom-transform-editor/Custom Transform Editor/Include/Editor Resources/Refresh.png", typeof(Texture2D)) as Texture2D;
 
             // 치트키 : 기존 TransformEditor로부터 RotationField 빌려쓰기
             if (_localRotationGUI == null)
@@ -48,14 +44,9 @@ namespace Rito.EditorUtilities
                 _trguiRotationFieldMethod = bunch.RotationField;
             }
 
-            try
-            {
-                _trguiOnEnableMethod.Invoke(_localRotationGUI, new object[] {
+            _trguiOnEnableMethod.Invoke(_localRotationGUI, new object[] {
                 base.serializedObject.FindProperty("m_LocalRotation"), EditorGUIUtility.TrTextContent("Local Rotation")
-                });
-            }
-            // SerializedObjectNotCreatableException
-            catch (System.Exception) { }
+            });
 
         }
         /***********************************************************************
@@ -73,13 +64,48 @@ namespace Rito.EditorUtilities
             EditorGUI.BeginChangeCheck();
             if (globalFoldOut = EditorGUILayout.Foldout(globalFoldOut, "Global"))
             {
+                Rect globalRect = GUILayoutUtility.GetLastRect();
                 DrawGlobalTransformInspector();
                 EditorGUILayout.Space();
+
+                Event e = Event.current;
+                Vector2 m = e.mousePosition;
+                if (e.type == EventType.ContextClick)
+                {
+                    contextChoice = 0;
+                    if (globalRect.Contains(m)) contextChoice = 7;
+                    if (contextChoice > 0)
+                    {
+                        GenericMenu myMenu = new GenericMenu();
+                        myMenu.AddItem(new GUIContent("Copy"), false, CopyFieldValues);
+                        myMenu.AddItem(new GUIContent("Paste"), false, hasCopiedValues ? new GenericMenu.MenuFunction(PasteFieldValues) : null);
+                        myMenu.AddItem(new GUIContent("Reset"), false, ResetFieldValues);
+                        myMenu.ShowAsContext();
+                    }
+                }
+            }
+            Rect foldRect = GUILayoutUtility.GetLastRect();
+            Event f = Event.current;
+            Vector2 n = f.mousePosition;
+            if (f.type == EventType.ContextClick)
+            {
+                contextChoice = 0;
+                if (foldRect.Contains(n)) contextChoice = 7;
+                if (contextChoice > 0)
+                {
+                    GenericMenu myMenu = new GenericMenu();
+                    myMenu.AddItem(new GUIContent("Copy"), false, CopyFieldValues);
+                    myMenu.AddItem(new GUIContent("Paste"), false, hasCopiedValues ? new GenericMenu.MenuFunction(PasteFieldValues) : null);
+                    myMenu.AddItem(new GUIContent("Reset"), false, ResetFieldValues);
+                    myMenu.ShowAsContext();
+                }
             }
             if (EditorGUI.EndChangeCheck())
             {
                 TransformEditorHelper.SaveGlobalFoldOutPref(globalFoldOut);
             }
+
+
 
             //base.serializedObject.ApplyModifiedProperties();
         }
@@ -112,6 +138,7 @@ namespace Rito.EditorUtilities
 
             // Local Position Field
             transform.localPosition = EditorGUILayout.Vector3Field("Local Position", transform.localPosition);
+            Rect posRect = GUILayoutUtility.GetLastRect();
 
             // Refresh Button
             DrawRefreshButton(Color.green, () => transform.localPosition = Vector3.zero);
@@ -124,6 +151,7 @@ namespace Rito.EditorUtilities
 
             // Local Rotation Field
             _trguiRotationFieldMethod.Invoke(_localRotationGUI, new object[] { });
+            Rect rotRect = GUILayoutUtility.GetLastRect();
 
             // 0~360 값 벗어나면 제한
             Vector3 exposedLocalEulerAngle = TransformUtils.GetInspectorRotation(transform);
@@ -147,11 +175,30 @@ namespace Rito.EditorUtilities
 
             // Local Scale Field
             transform.localScale = EditorGUILayout.Vector3Field("Local Scale", transform.localScale);
+            Rect scaleRect = GUILayoutUtility.GetLastRect();
 
             // Refresh Button
             DrawRefreshButton(Color.green, () => transform.localScale = Vector3.one);
 
             EditorGUILayout.EndHorizontal();
+
+            Event e = Event.current;
+            Vector2 m = e.mousePosition;
+            if (e.type == EventType.ContextClick)
+            {
+                contextChoice = 0;
+                if (posRect.Contains(m)) contextChoice = 1;
+                if (rotRect.Contains(m)) contextChoice = 2;
+                if (scaleRect.Contains(m)) contextChoice = 3;
+                if (contextChoice > 0)
+                {
+                    GenericMenu myMenu = new GenericMenu();
+                    myMenu.AddItem(new GUIContent("Copy"), false, CopyFieldValues);
+                    myMenu.AddItem(new GUIContent("Paste"), false, hasCopiedValues ? new GenericMenu.MenuFunction(PasteFieldValues) : null);
+                    myMenu.AddItem(new GUIContent("Reset"), false, ResetFieldValues);
+                    myMenu.ShowAsContext();
+                }
+            }
         }
 
         private void DrawGlobalTransformInspector()
@@ -175,6 +222,7 @@ namespace Rito.EditorUtilities
 
             Undo.RecordObject(transform, "Transform Global Position Changed");
             transform.position = EditorGUILayout.Vector3Field("Global Position", Vector3e4Round(transform.position));
+            Rect posRect = GUILayoutUtility.GetLastRect();
 
             // Refresh Button
             DrawRefreshButton(Color.blue, () => transform.position = Vector3.zero);
@@ -188,6 +236,7 @@ namespace Rito.EditorUtilities
 
             Vector3 globalRot = transform.eulerAngles;
             globalRot = EditorGUILayout.Vector3Field("Global Rotation", Vector3e4Round(globalRot));
+            Rect rotRect = GUILayoutUtility.GetLastRect();
 
             // 90 ~ 270 각도 건너뛰기
             if (90f < globalRot.x && globalRot.x < 180f) globalRot.x += 180f;
@@ -204,12 +253,31 @@ namespace Rito.EditorUtilities
 
             Undo.RecordObject(transform, "Transform Global Scale Changed");
             Vector3 changedGlobalScale = EditorGUILayout.Vector3Field("Global Scale", Vector3e4Round(transform.lossyScale));
+            Rect scaleRect = GUILayoutUtility.GetLastRect();
             ChangeGlobalScale(changedGlobalScale);
 
             // Refresh Button
             DrawRefreshButton(Color.blue, () => ChangeGlobalScale(Vector3.one));
 
             EditorGUILayout.EndHorizontal();
+
+            Event e = Event.current;
+            Vector2 m = e.mousePosition;
+            if (e.type == EventType.ContextClick)
+            {
+                contextChoice = 0;
+                if (posRect.Contains(m)) contextChoice = 4;
+                if (rotRect.Contains(m)) contextChoice = 5;
+                if (scaleRect.Contains(m)) contextChoice = 6;
+                if (contextChoice > 0)
+                {
+                    GenericMenu myMenu = new GenericMenu();
+                    myMenu.AddItem(new GUIContent("Copy"), false, CopyFieldValues);
+                    myMenu.AddItem(new GUIContent("Paste"), false, hasCopiedValues ? new GenericMenu.MenuFunction(PasteFieldValues) : null);
+                    myMenu.AddItem(new GUIContent("Reset"), false, ResetFieldValues);
+                    myMenu.ShowAsContext();
+                }
+            }
         }
 
         #endregion
@@ -261,6 +329,98 @@ namespace Rito.EditorUtilities
             return vector;
         }
 
+        private void ResetFieldValues()
+        {
+            Undo.RecordObject(transform, "Transform Changed");
+            switch (contextChoice)
+            {
+                case 1:
+                    transform.localPosition = Vector3.zero;
+                    break;
+                case 2:
+                    TransformUtils.SetInspectorRotation(transform, Vector3.zero);
+                    break;
+                case 3:
+                    transform.localScale = Vector3.one;
+                    break;
+                case 4:
+                    transform.position = Vector3.zero;
+                    break;
+                case 5:
+                    transform.eulerAngles = Vector3.zero;
+                    break;
+                case 6:
+                    ChangeGlobalScale(Vector3.one); ;
+                    break;
+                case 7:
+                    transform.position = Vector3.zero;
+                    transform.eulerAngles = Vector3.zero;
+                    ChangeGlobalScale(Vector3.one);
+                    break;
+            }
+            serializedObject.ApplyModifiedProperties();
+        }
+        private void CopyFieldValues()
+        {
+            hasCopiedValues = true;
+            switch (contextChoice)
+            {
+                case 1:
+                    copiedValues[0] = transform.localPosition;
+                    break;
+                case 2:
+                    copiedValues[0] = transform.localEulerAngles;
+                    break;
+                case 3:
+                    copiedValues[0] = transform.localScale;
+                    break;
+                case 4:
+                    copiedValues[0] = transform.position;
+                    break;
+                case 5:
+                    copiedValues[0] = transform.eulerAngles;
+                    break;
+                case 6:
+                    copiedValues[0] = transform.lossyScale;
+                    break;
+                case 7:
+                    copiedValues[0] = transform.position;
+                    copiedValues[1] = transform.eulerAngles;
+                    copiedValues[2] = transform.lossyScale;
+                    break;
+            }
+        }
+        private void PasteFieldValues()
+        {
+            Undo.RecordObject(transform, "Transform Changed");
+            switch (contextChoice)
+            {
+                case 1:
+                    transform.localPosition = Vector3e4Round(copiedValues[0]);
+                    break;
+                case 2:
+                    TransformUtils.SetInspectorRotation(transform, copiedValues[0]);
+                    break;
+                case 3:
+                    transform.localScale = Vector3e4Round(copiedValues[0]);
+                    break;
+                case 4:
+                    transform.position = Vector3e4Round(copiedValues[0]);
+                    break;
+                case 5:
+                    transform.eulerAngles = Vector3e4Round(copiedValues[0]);
+                    break;
+                case 6:
+                    ChangeGlobalScale(Vector3e4Round(copiedValues[0]));
+                    break;
+                case 7:
+                    transform.position = Vector3e4Round(copiedValues[0]);
+                    transform.eulerAngles = Vector3e4Round(copiedValues[1]);
+                    ChangeGlobalScale(Vector3e4Round(copiedValues[2]));
+                    break;
+            }
+            serializedObject.ApplyModifiedProperties();
+        }
         #endregion
         /***********************************************************************
         *                               Public Methods
