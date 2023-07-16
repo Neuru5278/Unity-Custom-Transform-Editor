@@ -2,326 +2,280 @@
 
 using UnityEngine;
 using UnityEditor;
+using System.Reflection;
+using System;
 
-#pragma warning disable CS0618 // Obsolete
-
-// 날짜 : 2021-02-17 02:06
-// 작성자 : Rito
-
-namespace Rito
+namespace Neuru
 {
+    [CanEditMultipleObjects]
     [CustomEditor(typeof(Transform))]
     public class TransformEditor : UnityEditor.Editor
     {
-        private Transform transform;
+        private SerializedProperty m_LocalPosition;
+        private SerializedProperty m_LocalRotation;
+        private SerializedProperty m_LocalScale;
 
         private static bool globalFoldOut;
 
-        private Texture refreshTexture;
-        private string texturePath;
-
-        private object _localRotationGUI; // 사용 이유 : 안쓰면 Euler.x 짐벌락 걸림
-        private System.Reflection.MethodInfo _trguiOnEnableMethod;
-        private System.Reflection.MethodInfo _trguiRotationFieldMethod;
-
         private static Vector3[] copiedValues = new Vector3[3];
-        private static bool hasCopiedValues;
+        private static bool[] hasCopiedValues = new bool[3] {false, false, false};
         private static int contextChoice;
+
+        private static System.Type RotationGUIType;
+        private static MethodInfo RotationGUIEnableMethod;
+        private static MethodInfo DrawRotationGUIMethod;
+        private object rotationGUI;
+
+        private GUIContent localPositionContent = new GUIContent("Position", "The local position of this GameObject relative to the parent.");
+        private GUIContent localRotationContent = new GUIContent("Rotation", "The local rotation of this GameObject relative to the parent.");
+        private GUIContent localScaleContent = new GUIContent("Scale", "The local scaling of this GameObject relative to the parent.");
+
+        private const string GlobalPrefName = "TE_GlobalFoldOut";
+
+        public static void SaveGlobalFoldOutPref(bool value)
+        {
+            EditorPrefs.SetBool(GlobalPrefName, value);
+        }
 
         private void OnEnable()
         {
-            transform = target as Transform;
+            if (RotationGUIType == null)
+                RotationGUIType = System.Type.GetType("UnityEditor.TransformRotationGUI, UnityEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null");
+            if (RotationGUIEnableMethod == null)
+                RotationGUIEnableMethod = RotationGUIType.GetMethod("OnEnable", BindingFlags.Public | BindingFlags.Instance);
+            if (DrawRotationGUIMethod == null)
+                DrawRotationGUIMethod = RotationGUIType.GetMethod("RotationField", Array.Empty<System.Type>());
 
-            texturePath = TransformEditorHelper.FolderPath + @"\EditorResources\Refresh.png";
-            refreshTexture = AssetDatabase.LoadAssetAtPath(texturePath, typeof(Texture2D)) as Texture2D;
+            // SerializedProperty 초기화
+            m_LocalPosition = serializedObject.FindProperty("m_LocalPosition");
+            m_LocalRotation = serializedObject.FindProperty("m_LocalRotation");
+            m_LocalScale = serializedObject.FindProperty("m_LocalScale");
 
-            // 치트키 : 기존 TransformEditor로부터 RotationField 빌려쓰기
-            if (_localRotationGUI == null)
-            {
-                var bunch = TransformEditorHelper.GetTransformRotationGUI();
-                _localRotationGUI = bunch.rotationGUI;
-                _trguiOnEnableMethod = bunch.OnEnable;
-                _trguiRotationFieldMethod = bunch.RotationField;
-            }
-
-            _trguiOnEnableMethod.Invoke(_localRotationGUI, new object[] {
-                base.serializedObject.FindProperty("m_LocalRotation"), EditorGUIUtility.TrTextContent("Local Rotation")
-            });
-
+            if (rotationGUI == null)
+                rotationGUI = Activator.CreateInstance(RotationGUIType);
+            RotationGUIEnableMethod.Invoke(rotationGUI, new object[] { m_LocalRotation, localRotationContent });
         }
-        /***********************************************************************
-        *                               Inspector Methods
-        ***********************************************************************/
-        #region .
+
         public override void OnInspectorGUI()
         {
-            // 1. Local Transform
+            serializedObject.Update();
+
+            EditorGUI.BeginChangeCheck();
+
+            // 로컬 변환 정보 표시
             DrawDefaultTransformInspector();
 
-            EditorGUILayout.Space();
+            // 글로벌 변환 정보 펼침/접기
+            globalFoldOut = EditorGUILayout.Foldout(globalFoldOut, "Global");
 
-            // 2. Global Transform
-            EditorGUI.BeginChangeCheck();
-            if (globalFoldOut = EditorGUILayout.Foldout(globalFoldOut, "Global"))
+            DrawSeparator();
+
+            if (globalFoldOut)
             {
-                Rect globalRect = GUILayoutUtility.GetLastRect();
+                // 글로벌 변환 정보 표시
                 DrawGlobalTransformInspector();
-                EditorGUILayout.Space();
+            }
 
-                Event e = Event.current;
-                Vector2 m = e.mousePosition;
-                if (e.type == EventType.ContextClick)
-                {
-                    contextChoice = 0;
-                    if (globalRect.Contains(m)) contextChoice = 7;
-                    if (contextChoice > 0)
-                    {
-                        GenericMenu myMenu = new GenericMenu();
-                        myMenu.AddItem(new GUIContent("Copy"), false, CopyFieldValues);
-                        myMenu.AddItem(new GUIContent("Paste"), false, hasCopiedValues ? new GenericMenu.MenuFunction(PasteFieldValues) : null);
-                        myMenu.AddItem(new GUIContent("Reset"), false, ResetFieldValues);
-                        myMenu.ShowAsContext();
-                    }
-                }
-            }
-            Rect foldRect = GUILayoutUtility.GetLastRect();
-            Event f = Event.current;
-            Vector2 n = f.mousePosition;
-            if (f.type == EventType.ContextClick)
-            {
-                contextChoice = 0;
-                if (foldRect.Contains(n)) contextChoice = 7;
-                if (contextChoice > 0)
-                {
-                    GenericMenu myMenu = new GenericMenu();
-                    myMenu.AddItem(new GUIContent("Copy"), false, CopyFieldValues);
-                    myMenu.AddItem(new GUIContent("Paste"), false, hasCopiedValues ? new GenericMenu.MenuFunction(PasteFieldValues) : null);
-                    myMenu.AddItem(new GUIContent("Reset"), false, ResetFieldValues);
-                    myMenu.ShowAsContext();
-                }
-            }
             if (EditorGUI.EndChangeCheck())
             {
-                TransformEditorHelper.SaveGlobalFoldOutPref(globalFoldOut);
+                // 변화가 있을 경우 저장 및 적용
+                SaveGlobalFoldOutPref(globalFoldOut);
+                Undo.RecordObjects(targets, "Transform");
+                serializedObject.ApplyModifiedProperties();
+                foreach (var targetObject in targets)
+                {
+                    EditorUtility.SetDirty(targetObject);
+                }
             }
-
-
-
-            //base.serializedObject.ApplyModifiedProperties();
         }
 
         private void DrawDefaultTransformInspector()
         {
-            // Reset Button
-            Color oldBgColor = GUI.backgroundColor;
-            Color oldTxtColor = GUI.contentColor;
-            GUI.backgroundColor = Color.green;
-            GUI.contentColor = Color.white;
-            if (GUILayout.Button("Reset"))
-            {
-                transform.localPosition = Vector3.zero;
-                transform.localScale = Vector3.one;
+            DrawSeparator();
 
-                TransformUtils.SetInspectorRotation(transform, Vector3.zero);
-            }
-            GUI.backgroundColor = oldBgColor;
-            GUI.contentColor = oldTxtColor;
-
-            //base.serializedObject.Update();
-            // ==================================== Local Position =========================================
             EditorGUILayout.BeginHorizontal();
 
-            Undo.RecordObject(transform, "Transform Local Position Changed");
-
-            if (globalFoldOut)
-                transform.localPosition = Vector3e4Round(transform.localPosition);
-
-            // Local Position Field
-            transform.localPosition = EditorGUILayout.Vector3Field("Local Position", transform.localPosition);
-            Rect posRect = GUILayoutUtility.GetLastRect();
-
-            // Refresh Button
-            DrawRefreshButton(Color.green, () => transform.localPosition = Vector3.zero);
-
-            EditorGUILayout.EndHorizontal();
-            // ==================================== Local Rotation =========================================
-            EditorGUILayout.BeginHorizontal();
-
-            Undo.RecordObject(transform, "Transform Local Rotation Changed");
-
-            // Local Rotation Field
-            _trguiRotationFieldMethod.Invoke(_localRotationGUI, new object[] { });
-            Rect rotRect = GUILayoutUtility.GetLastRect();
-
-            // 0~360 값 벗어나면 제한
-            Vector3 exposedLocalEulerAngle = TransformUtils.GetInspectorRotation(transform);
-            if (exposedLocalEulerAngle.x < 0f || exposedLocalEulerAngle.y < 0f || exposedLocalEulerAngle.z < 0f ||
-                exposedLocalEulerAngle.x > 360f || exposedLocalEulerAngle.y > 360f || exposedLocalEulerAngle.z > 360f)
-            {
-                TransformUtils.SetInspectorRotation(transform, transform.localEulerAngles);
-            }
-
-            // Refresh Button
-            DrawRefreshButton(Color.green, () => TransformUtils.SetInspectorRotation(transform, Vector3.zero));
-
-            EditorGUILayout.EndHorizontal();
-            // ==================================== Local Scale =========================================
-            EditorGUILayout.BeginHorizontal();
-
-            Undo.RecordObject(transform, "Transform Local Scale Changed");
-
-            if (globalFoldOut)
-                transform.localScale = Vector3e4Round(transform.localScale);
-
-            // Local Scale Field
-            transform.localScale = EditorGUILayout.Vector3Field("Local Scale", transform.localScale);
-            Rect scaleRect = GUILayoutUtility.GetLastRect();
-
-            // Refresh Button
-            DrawRefreshButton(Color.green, () => transform.localScale = Vector3.one);
+            // 로컬 전체 복사, 붙여넣기, 리셋 버튼 표시
+            DrawIntegratedButton(Color.green, 7);
 
             EditorGUILayout.EndHorizontal();
 
-            Event e = Event.current;
-            Vector2 m = e.mousePosition;
-            if (e.type == EventType.ContextClick)
-            {
-                contextChoice = 0;
-                if (posRect.Contains(m)) contextChoice = 1;
-                if (rotRect.Contains(m)) contextChoice = 2;
-                if (scaleRect.Contains(m)) contextChoice = 3;
-                if (contextChoice > 0)
-                {
-                    GenericMenu myMenu = new GenericMenu();
-                    myMenu.AddItem(new GUIContent("Copy"), false, CopyFieldValues);
-                    myMenu.AddItem(new GUIContent("Paste"), false, hasCopiedValues ? new GenericMenu.MenuFunction(PasteFieldValues) : null);
-                    myMenu.AddItem(new GUIContent("Reset"), false, ResetFieldValues);
-                    myMenu.ShowAsContext();
-                }
-            }
+            DrawSeparator();
+
+            EditorGUILayout.BeginHorizontal();
+
+            // 로컬 위치 표시
+            EditorGUILayout.PropertyField(m_LocalPosition, localPositionContent);
+
+            // 복사, 붙여넣기, 리셋 버튼 표시
+            DrawAllButton(Color.green, 1);
+
+            EditorGUILayout.EndHorizontal();
+
+            EditorGUILayout.BeginHorizontal();
+
+            // 로컬 회전 표시
+            DrawRotationGUIMethod.Invoke(rotationGUI, null);
+
+            // 복사, 붙여넣기, 리셋 버튼 표시
+            DrawAllButton(Color.green, 2);
+
+            EditorGUILayout.EndHorizontal();
+
+            EditorGUILayout.BeginHorizontal();
+
+            // 로컬 스케일 표시
+            EditorGUILayout.PropertyField(m_LocalScale, localScaleContent);
+
+            // 복사, 붙여넣기, 리셋 버튼 표시
+            DrawAllButton(Color.green, 3);
+
+            EditorGUILayout.EndHorizontal();
+
+            DrawSeparator();
         }
 
         private void DrawGlobalTransformInspector()
         {
-            // Reset Button
-            Color oldBgColor = GUI.backgroundColor;
-            Color oldTxtColor = GUI.contentColor;
-            GUI.backgroundColor = Color.blue;
-            GUI.contentColor = Color.white;
-            if (GUILayout.Button("Reset"))
+            EditorGUILayout.BeginHorizontal();
+
+            // 로컬 전체 복사, 붙여넣기, 리셋 버튼 표시
+            DrawIntegratedButton(Color.blue, 8);
+
+            EditorGUILayout.EndHorizontal();
+
+            DrawSeparator();
+
+            EditorGUILayout.BeginHorizontal();
+
+            // 글로벌 위치 표시
+            Vector3 beforePosition = RoundVector3(((Transform)target).position);
+            Vector3 changedPosition = EditorGUILayout.Vector3Field("Global Position", RoundVector3(((Transform)target).position));
+
+            if (beforePosition != changedPosition)
             {
-                transform.position = Vector3.zero;
-                transform.eulerAngles = Vector3.zero;
-                ChangeGlobalScale(Vector3.one);
-            }
-            GUI.backgroundColor = oldBgColor;
-            GUI.contentColor = oldTxtColor;
-
-            // ==================================== Global Position =========================================
-            EditorGUILayout.BeginHorizontal();
-
-            Undo.RecordObject(transform, "Transform Global Position Changed");
-            transform.position = EditorGUILayout.Vector3Field("Global Position", Vector3e4Round(transform.position));
-            Rect posRect = GUILayoutUtility.GetLastRect();
-
-            // Refresh Button
-            DrawRefreshButton(Color.blue, () => transform.position = Vector3.zero);
-
-            EditorGUILayout.EndHorizontal();
-
-            // ==================================== Global Rotation =========================================
-            EditorGUILayout.BeginHorizontal();
-
-            Undo.RecordObject(transform, "Transform Global Rotation Changed");
-
-            Vector3 globalRot = transform.eulerAngles;
-            globalRot = EditorGUILayout.Vector3Field("Global Rotation", Vector3e4Round(globalRot));
-            Rect rotRect = GUILayoutUtility.GetLastRect();
-
-            // 90 ~ 270 각도 건너뛰기
-            if (90f < globalRot.x && globalRot.x < 180f) globalRot.x += 180f;
-            else if (180 < globalRot.x && globalRot.x < 270f) globalRot.x -= 180f;
-
-            transform.eulerAngles = globalRot;//Vector3E4Round(globalRot);
-
-            // Refresh Button
-            DrawRefreshButton(Color.blue, () => transform.eulerAngles = Vector3.zero);
-
-            EditorGUILayout.EndHorizontal();
-            // ==================================== Global Scale =========================================
-            EditorGUILayout.BeginHorizontal();
-
-            Undo.RecordObject(transform, "Transform Global Scale Changed");
-            Vector3 changedGlobalScale = EditorGUILayout.Vector3Field("Global Scale", Vector3e4Round(transform.lossyScale));
-            Rect scaleRect = GUILayoutUtility.GetLastRect();
-            ChangeGlobalScale(changedGlobalScale);
-
-            // Refresh Button
-            DrawRefreshButton(Color.blue, () => ChangeGlobalScale(Vector3.one));
-
-            EditorGUILayout.EndHorizontal();
-
-            Event e = Event.current;
-            Vector2 m = e.mousePosition;
-            if (e.type == EventType.ContextClick)
-            {
-                contextChoice = 0;
-                if (posRect.Contains(m)) contextChoice = 4;
-                if (rotRect.Contains(m)) contextChoice = 5;
-                if (scaleRect.Contains(m)) contextChoice = 6;
-                if (contextChoice > 0)
+                foreach (var targetObject in targets)
                 {
-                    GenericMenu myMenu = new GenericMenu();
-                    myMenu.AddItem(new GUIContent("Copy"), false, CopyFieldValues);
-                    myMenu.AddItem(new GUIContent("Paste"), false, hasCopiedValues ? new GenericMenu.MenuFunction(PasteFieldValues) : null);
-                    myMenu.AddItem(new GUIContent("Reset"), false, ResetFieldValues);
-                    myMenu.ShowAsContext();
+                    ((Transform)targetObject).position = changedPosition;
                 }
             }
+
+            // 복사, 붙여넣기, 리셋 버튼 표시
+            DrawAllButton(Color.blue, 4);
+
+            EditorGUILayout.EndHorizontal();
+
+            EditorGUILayout.BeginHorizontal();
+
+            // 글로벌 회전 표시
+            Vector3 beforeRotation = RoundVector3(((Transform)target).eulerAngles);
+            Vector3 changedRotation = EditorGUILayout.Vector3Field("Global Rotation", RoundVector3(((Transform)target).eulerAngles));
+
+            if (beforeRotation != changedRotation)
+            {
+                foreach (var targetObject in targets)
+                {
+                    ((Transform)targetObject).eulerAngles = changedRotation;
+                }
+            }
+
+            // 복사, 붙여넣기, 리셋 버튼 표시
+            DrawAllButton(Color.blue, 5);
+
+            EditorGUILayout.EndHorizontal();
+
+            EditorGUILayout.BeginHorizontal();
+
+            // 글로벌 스케일 표시
+            Vector3 beforeScale = RoundVector3(((Transform)target).lossyScale);
+            Vector3 changedScale = EditorGUILayout.Vector3Field("Global Scale", RoundVector3(((Transform)target).lossyScale));
+
+            if (beforeScale != changedScale)
+            {
+                foreach (var targetObject in targets)
+                {
+                    ChangeGlobalScale((Transform)targetObject, changedScale);
+                }
+            }
+
+            // 복사, 붙여넣기, 리셋 버튼 표시
+            DrawAllButton(Color.blue, 6);
+
+            EditorGUILayout.EndHorizontal();
+
+            DrawSeparator();
         }
 
-        #endregion
-        /***********************************************************************
-        *                               Private Methods
-        ***********************************************************************/
-        #region .
-        /// <summary> 버튼을 그립니당 </summary>
-        private void DrawRefreshButton(in Color color, System.Action action)
+        private void DrawAllButton(Color color, int contextChoice)
+        {
+            // 복사 버튼 표시
+            DrawButton(color, () => CopyFieldValues(contextChoice), "C");
+
+            // 붙여넣기 버튼 표시
+            DrawButton(color, () => PasteFieldValues(contextChoice), "P");
+
+            // 리셋 버튼 표시
+            DrawButton(color, () => ResetFieldValues(contextChoice), "R");
+        }
+
+        private void DrawIntegratedButton(Color color, int contextChoice)
         {
             Color oldBgColor = GUI.backgroundColor;
             GUI.backgroundColor = color;
-            if (GUILayout.Button(refreshTexture, GUILayout.Width(20f), GUILayout.Height(18f)))
+
+            if (GUILayout.Button("Copy"))
             {
-                action();
+                CopyFieldValues(contextChoice);
             }
+
+            if (GUILayout.Button("Paste"))
+            {
+                PasteFieldValues(contextChoice);
+            }
+
+            if (GUILayout.Button("Reset"))
+            {
+                ResetFieldValues(contextChoice);
+            }
+
             GUI.backgroundColor = oldBgColor;
         }
 
-        System.Collections.Generic.Queue<Vector3> _scaleHierarchy = new System.Collections.Generic.Queue<Vector3>();
-        private void ChangeGlobalScale(Vector3 globalScale)
+        private void DrawButton(Color color, System.Action action, string text)
         {
-            _scaleHierarchy.Clear();
-            Transform parentTr = transform.parent;
-            while (parentTr != null)
+            Color oldBgColor = GUI.backgroundColor;
+            GUI.backgroundColor = color;
+
+            if (GUILayout.Button(text, GUILayout.Width(20f), GUILayout.Height(18f)))
             {
-                _scaleHierarchy.Enqueue(parentTr.localScale);
-                parentTr = parentTr.parent;
+                action();
             }
 
-            while (_scaleHierarchy.Count > 0)
-            {
-                var current = _scaleHierarchy.Dequeue();
-                float x = globalScale.x / current.x;
-                float y = globalScale.y / current.y;
-                float z = globalScale.z / current.z;
-                globalScale.Set(x, y, z);
-            }
-
-            transform.localScale = globalScale;
+            GUI.backgroundColor = oldBgColor;
         }
 
-        /// <summary> 소수 4번째 자리까지 반올림 </summary>
-        private Vector3 Vector3e4Round(Vector3 vector)
+        private static void DrawSeparator(int thickness = 1, int padding = 10)
+        {
+            Rect r = EditorGUILayout.GetControlRect(GUILayout.Height(thickness + padding));
+            r.height = thickness;
+            r.y += padding / 2f;
+            r.x -= 2;
+            r.width += 6;
+            ColorUtility.TryParseHtmlString(EditorGUIUtility.isProSkin ? "#595959" : "#858585", out Color lineColor);
+            EditorGUI.DrawRect(r, lineColor);
+        }
+
+        private void ChangeGlobalScale(Transform transform, Vector3 globalScale)
+        {
+            transform.localScale = Vector3.one;
+            transform.localScale = new Vector3(
+                globalScale.x / transform.lossyScale.x,
+                globalScale.y / transform.lossyScale.y,
+                globalScale.z / transform.lossyScale.z
+            );
+        }
+
+        private Vector3 RoundVector3(Vector3 vector)
         {
             vector.x = Mathf.Round(vector.x * 10000f) * 0.0001f;
             vector.y = Mathf.Round(vector.y * 10000f) * 0.0001f;
@@ -329,109 +283,196 @@ namespace Rito
             return vector;
         }
 
-        private void ResetFieldValues()
+        private void ResetFieldValues(int contextChoice)
         {
-            Undo.RecordObject(transform, "Transform Changed");
+            serializedObject.Update();
+            Undo.RecordObjects(targets, "Transform");
             switch (contextChoice)
             {
                 case 1:
-                    transform.localPosition = Vector3.zero;
+                    m_LocalPosition.vector3Value = Vector3.zero;
                     break;
                 case 2:
-                    TransformUtils.SetInspectorRotation(transform, Vector3.zero);
+                    m_LocalRotation.quaternionValue = Quaternion.identity;
                     break;
                 case 3:
-                    transform.localScale = Vector3.one;
+                    m_LocalScale.vector3Value = Vector3.one;
                     break;
                 case 4:
-                    transform.position = Vector3.zero;
+                    foreach (var targetObject in targets)
+                    {
+                        ((Transform)targetObject).position = Vector3.zero;
+                    }
                     break;
                 case 5:
-                    transform.eulerAngles = Vector3.zero;
+                    foreach (var targetObject in targets)
+                    {
+                        ((Transform)targetObject).rotation = Quaternion.identity;
+                    }
                     break;
                 case 6:
-                    ChangeGlobalScale(Vector3.one); ;
+                    foreach (var targetObject in targets)
+                    {
+                        ChangeGlobalScale((Transform)targetObject, Vector3.one);
+                    }
                     break;
                 case 7:
-                    transform.position = Vector3.zero;
-                    transform.eulerAngles = Vector3.zero;
-                    ChangeGlobalScale(Vector3.one);
+                    m_LocalPosition.vector3Value = Vector3.zero;
+                    m_LocalRotation.quaternionValue = Quaternion.identity;
+                    m_LocalScale.vector3Value = Vector3.one;
+                    break;
+                case 8:
+                    foreach (var targetObject in targets)
+                    {
+                        ((Transform)targetObject).position = Vector3.zero;
+                        ((Transform)targetObject).rotation = Quaternion.identity;
+                        ChangeGlobalScale((Transform)targetObject, Vector3.one);
+                    }
                     break;
             }
+
             serializedObject.ApplyModifiedProperties();
-        }
-        private void CopyFieldValues()
-        {
-            hasCopiedValues = true;
-            switch (contextChoice)
-            {
-                case 1:
-                    copiedValues[0] = transform.localPosition;
-                    break;
-                case 2:
-                    copiedValues[0] = transform.localEulerAngles;
-                    break;
-                case 3:
-                    copiedValues[0] = transform.localScale;
-                    break;
-                case 4:
-                    copiedValues[0] = transform.position;
-                    break;
-                case 5:
-                    copiedValues[0] = transform.eulerAngles;
-                    break;
-                case 6:
-                    copiedValues[0] = transform.lossyScale;
-                    break;
-                case 7:
-                    copiedValues[0] = transform.position;
-                    copiedValues[1] = transform.eulerAngles;
-                    copiedValues[2] = transform.lossyScale;
-                    break;
-            }
-        }
-        private void PasteFieldValues()
-        {
-            Undo.RecordObject(transform, "Transform Changed");
-            switch (contextChoice)
-            {
-                case 1:
-                    transform.localPosition = Vector3e4Round(copiedValues[0]);
-                    break;
-                case 2:
-                    TransformUtils.SetInspectorRotation(transform, copiedValues[0]);
-                    break;
-                case 3:
-                    transform.localScale = Vector3e4Round(copiedValues[0]);
-                    break;
-                case 4:
-                    transform.position = Vector3e4Round(copiedValues[0]);
-                    break;
-                case 5:
-                    transform.eulerAngles = Vector3e4Round(copiedValues[0]);
-                    break;
-                case 6:
-                    ChangeGlobalScale(Vector3e4Round(copiedValues[0]));
-                    break;
-                case 7:
-                    transform.position = Vector3e4Round(copiedValues[0]);
-                    transform.eulerAngles = Vector3e4Round(copiedValues[1]);
-                    ChangeGlobalScale(Vector3e4Round(copiedValues[2]));
-                    break;
-            }
-            serializedObject.ApplyModifiedProperties();
-        }
-        #endregion
-        /***********************************************************************
-        *                               Public Methods
-        ***********************************************************************/
-        #region .
-        public static void LoadGlobalFoldOutValue(bool value)
-        {
-            globalFoldOut = value;
         }
 
-        #endregion
+        private void CopyFieldValues(int contextChoice)
+        {
+            for (int i = 0; i < hasCopiedValues.Length; i++) { hasCopiedValues[i] = false; }
+
+            switch (contextChoice)
+            {
+                case 1:
+                    copiedValues[0] = m_LocalPosition.vector3Value;
+                    hasCopiedValues[0] = true;
+                    break;
+                case 2:
+                    copiedValues[1] = m_LocalRotation.quaternionValue.eulerAngles;
+                    hasCopiedValues[1] = true;
+                    break;
+                case 3:
+                    copiedValues[2] = m_LocalScale.vector3Value;
+                    hasCopiedValues[2] = true;
+                    break;
+                case 4:
+                    copiedValues[0] = ((Transform)target).position;
+                    hasCopiedValues[0] = true;
+                    break;
+                case 5:
+                    copiedValues[1] = ((Transform)target).rotation.eulerAngles;
+                    hasCopiedValues[1] = true;
+                    break;
+                case 6:
+                    copiedValues[2] = ((Transform)target).lossyScale;
+                    hasCopiedValues[2] = true;
+                    break;
+                case 7:
+                    copiedValues[0] = m_LocalPosition.vector3Value;
+                    hasCopiedValues[0] = true;
+                    copiedValues[1] = m_LocalRotation.quaternionValue.eulerAngles;
+                    hasCopiedValues[1] = true;
+                    copiedValues[2] = m_LocalScale.vector3Value;
+                    hasCopiedValues[2] = true;
+                    break;
+                case 8:
+                    copiedValues[0] = ((Transform)target).position;
+                    hasCopiedValues[0] = true;
+                    copiedValues[1] = ((Transform)target).rotation.eulerAngles;
+                    hasCopiedValues[1] = true;
+                    copiedValues[2] = ((Transform)target).lossyScale;
+                    hasCopiedValues[2] = true;
+                    break;
+            }
+        }
+
+        private void PasteFieldValues(int contextChoice)
+        {
+            serializedObject.Update();
+            Undo.RecordObjects(targets, "Transform");
+            switch (contextChoice)
+            {
+                case 1:
+                    if (hasCopiedValues[0] == true)
+                    {
+                        m_LocalPosition.vector3Value = RoundVector3(copiedValues[0]);
+
+                    }
+                    break;
+                case 2:
+                    if (hasCopiedValues[1] == true)
+                    {
+                        Quaternion tempQuaternion1 = Quaternion.Euler(RoundVector3(copiedValues[1]));
+                        m_LocalRotation.quaternionValue = tempQuaternion1;
+                    }
+                    break;
+                case 3:
+                    if (hasCopiedValues[2] == true)
+                    {
+                        m_LocalScale.vector3Value = RoundVector3(copiedValues[2]);
+                    }
+                    break;
+                case 4:
+                    if (hasCopiedValues[0] == true)
+                    {
+                        foreach (var targetObject in targets)
+                        {
+                            ((Transform)targetObject).position = RoundVector3(copiedValues[0]);
+                        }
+                    }
+                    break;
+                case 5:
+                    if (hasCopiedValues[1] == true)
+                    {
+                        Quaternion tempQuaternion2 = Quaternion.Euler(RoundVector3(copiedValues[1]));
+                        foreach (var targetObject in targets)
+                        {
+                            ((Transform)targetObject).rotation = tempQuaternion2;
+                        }
+                    }
+                    break;
+                case 6:
+                    if (hasCopiedValues[2] == true)
+                    {
+                        foreach (var targetObject in targets)
+                        {
+                            ChangeGlobalScale((Transform)targetObject, RoundVector3(copiedValues[2]));
+                        }
+                    }
+                    break;
+                case 7:
+                    if (hasCopiedValues[0] == true)
+                    {
+                        m_LocalPosition.vector3Value = RoundVector3(copiedValues[0]);
+                    }
+                    if (hasCopiedValues[1] == true)
+                    {
+                        m_LocalRotation.quaternionValue = Quaternion.Euler(RoundVector3(copiedValues[1]));
+                    }
+                    if (hasCopiedValues[2] == true)
+                    {
+                        m_LocalScale.vector3Value = RoundVector3(copiedValues[2]);
+                    }
+                    break;
+                case 8:
+                    foreach (var targetObject in targets)
+                    {
+                        if (hasCopiedValues[0] == true)
+                        {
+                            ((Transform)targetObject).position = RoundVector3(copiedValues[0]);
+                        }
+                        if (hasCopiedValues[1] == true)
+                        {
+                            ((Transform)targetObject).rotation = Quaternion.Euler(RoundVector3(copiedValues[1]));
+                        }
+                        if (hasCopiedValues[2] == true)
+                        {
+                            ChangeGlobalScale((Transform)targetObject, RoundVector3(copiedValues[2]));
+                        }
+                    }
+                    break;
+            }
+
+            serializedObject.ApplyModifiedProperties();
+        }
     }
 }
+
 #endif
