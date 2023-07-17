@@ -137,6 +137,8 @@ namespace Neuru.CustomTransformEditor
 
         private void DrawGlobalTransformInspector()
         {
+            Undo.RecordObjects(targets, "Transform");
+            
             EditorGUILayout.BeginHorizontal();
 
             // 로컬 전체 복사, 붙여넣기, 리셋 버튼 표시
