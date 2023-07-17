@@ -5,7 +5,7 @@ using UnityEditor;
 using System.Reflection;
 using System;
 
-namespace Neuru
+namespace Neuru.CustomTransformEditor
 {
     [CanEditMultipleObjects]
     [CustomEditor(typeof(Transform))]
